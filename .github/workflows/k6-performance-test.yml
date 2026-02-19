@@ -1,4 +1,4 @@
-name: k6 Performance Tests (MCP Simplifed)
+name: k6 Performance Tests (Pure MCP)
 
 on:
   pull_request:
@@ -13,86 +13,70 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
 
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      PR_TITLE: ${{ github.event.pull_request.title }}
-      PR_BODY: ${{ github.event.pull_request.body }}
-      PR_NUMBER: ${{ github.event.pull_request.number }}
-      REPO: ${{ github.repository }}
-      OLLAMA_HOST: http://localhost:11434
-
     steps:
       - name: Checkout PR branch
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          fetch-depth: 0
 
       - name: Detect tech stack
         id: detect-stack
         run: |
           STACK="unknown"
           if [ -f "pom.xml" ]; then STACK="java-maven"
-          elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then STACK="java-gradle"
           elif [ -f "package.json" ]; then STACK="node"
-          elif [ -f "requirements.txt" ] || [ -f "pyproject.toml" ]; then STACK="python"
-          elif [ -f "go.mod" ]; then STACK="go"
-          elif [ -f "Gemfile" ]; then STACK="ruby"
           fi
           echo "stack=$STACK" >> "$GITHUB_OUTPUT"
 
-      # --- Setup ---
-      - name: Setup Java
-        if: contains(steps.detect-stack.outputs.stack, 'java')
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-
-      # --- Build App ---
-      - name: Build App
+      - name: Setup Environment
         run: |
-          STACK="${{ steps.detect-stack.outputs.stack }}"
-          if [ "$STACK" == "java-maven" ]; then mvn -B package -DskipTests
-          elif [ "$STACK" == "node" ]; then npm install && (npm run build || true)
-          fi
-
-      # --- Start App ---
-      - name: Start application
-        run: |
-          chmod +x scripts/start.sh
-          bash scripts/start.sh &
-          sleep 10
-
-      # --- Install Dependencies (k6, Ollama, Official mcp-k6) ---
-      - name: Install performance tools
-        run: |
-          # Install k6
-          sudo gpg -k
-          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
-          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
-          sudo apt-get update -qq && sudo apt-get install -y k6
+          # Install k6 & mcp-k6
+          sudo apt-get update && sudo apt install -y k6
+          curl -LO https://github.com/grafana/mcp-k6/releases/download/v0.5.0/mcp-k6_0.5.0_linux_amd64.deb
+          sudo apt install ./mcp-k6_0.5.0_linux_amd64.deb
           
-          # Install Official mcp-k6 (using .deb package for speed)
-          VERSION="0.5.0"
-          curl -LO "https://github.com/grafana/mcp-k6/releases/download/v${VERSION}/mcp-k6_${VERSION}_linux_amd64.deb"
-          sudo apt install ./mcp-k6_${VERSION}_linux_amd64.deb
-          mcp-k6 --version
-
           # Install Ollama
           curl -fsSL https://ollama.com/install.sh | sh
           ollama serve &
-          sleep 5
-          ollama pull llama3
+          sleep 5 && ollama pull llama3
 
-      # --- Execute ---
-      - name: Run K6 MCP Agent
-        env:
-          DETECTED_STACK: ${{ steps.detect-stack.outputs.stack }}
+      - name: Start App
         run: |
-          python3 scripts/mcp_agent.py
+          chmod +x scripts/start.sh
+          ./scripts/start.sh &
+          sleep 15
+
+      # --- PURE MCP STEP ---
+      # We use a one-liner to call the MCP tools via the CLI
+      # This is the "Pure" way: No custom python scripts, just invoking tools.
+      - name: Run K6 via MCP
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🤖 Invoking mcp-k6 tools directly..."
+          
+          # 1. Generate & Run via the 'run_script' tool
+          # We pass a baseline script and let MCP do the heavy lifting
+          RESULT=$(mcp-k6 --transport stdio <<EOF
+          {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+              "name": "run_script",
+              "arguments": {
+                "script": "import http from 'k6/http'; export default function() { http.get('http://localhost:8080/'); }",
+                "vus": 10,
+                "duration": "30s"
+              }
+            }
+          }
+          EOF
+          )
+          
+          echo "📊 Results: $RESULT"
+          
+          # 2. Handle failure if success is false
+          if echo "$RESULT" | grep -q '"success":false'; then
+            echo "❌ Performance test failed"
+            exit 1
+          fi
+          echo "✅ Performance test passed"
