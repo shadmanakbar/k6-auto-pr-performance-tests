@@ -1,28 +1,20 @@
-# 🚀 Automated k6 Performance Testing (Pure MCP)
+# 🚀 Automated k6 Performance Testing (Official MCP)
 
-This repository provides a **state-of-the-art performance testing solution** for GitHub Pull Requests, powered by the **Official [Grafana mcp-k6 server](https://github.com/grafana/mcp-k6)** and the **Model Context Protocol (MCP)**.
+[![GitHub License](https://img.shields.io/github/license/shadmanakbar/k6-auto-pr-performance-tests)](https://github.com/shadmanakbar/k6-auto-pr-performance-tests/blob/main/LICENSE)
+[![k6](https://img.shields.io/badge/k6-Official-blueviolet)](https://k6.io)
+[![MCP](https://img.shields.io/badge/MCP-Standard-blue)](https://modelcontextprotocol.io)
 
-### 🧠 Pure MCP Architecture
-This solution is "scriptless" and zero-maintenance. It uses a lightweight **MCP Agent** to communicate between your preferred LLM and the official k6 tools.
-
-1.  **Detects** your stack (Node, Java, Python, Go, Ruby).
-2.  **Starts** your app in the background.
-3.  **MCP Agent** handshakes with the official `mcp-k6` server over `stdio`.
-4.  **LLM Intelligence** (Ollama, OpenAI, or Anthropic) generates and analyzes results dynamically.
-5.  **Official MCP Tools** handle script validation and high-performance execution.
+This repository provides a **professional, AI-driven performance testing solution** for GitHub Pull Requests. It leverages the **Official [Grafana mcp-k6 server](https://github.com/grafana/mcp-k6)** and the **Model Context Protocol (MCP)** to bring "Pure MCP" automation to your CI/CD pipeline.
 
 ---
 
-## 🧠 AI Intelligence (Multi-LLM)
+## 🎨 Pure MCP Architecture
+This solution is designed for **Zero-Maintenance**. It eliminates complex custom orchestrators by using a lightweight **MCP Agent** bridge and the official Grafana tooling.
 
-By default, this solution uses **local Ollama (llama3)** inside the GitHub runner for 100% privacy and zero cost. You can switch to premium models by setting GitHub Variables/Secrets:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LLM_PROVIDER` | `ollama` | `ollama`, `openai`, or `anthropic` |
-| `LLM_MODEL` | `llama3` | `gpt-4o`, `claude-3-5-sonnet-latest`, etc. |
-| `LLM_API_KEY` | *(None)* | Your OpenAI or Anthropic API key (as a Secret) |
-| `LLM_URL` | `http://localhost:11434` | Custom endpoint for Ollama or local LLM |
+1.  **🔍 Smart Detection**: Automatically identifies your tech stack (Node, Java, Go, Python, Ruby).
+2.  **🏗️ Auto-Build & Start**: Builds and backgrounds your application on port `8080`.
+3.  **🤖 AI Brain (Multi-LLM)**: Handshakes with an LLM of your choice (Ollama, OpenAI, Anthropic) to generate k6 scripts.
+4.  **🛡️ Security Sandbox**: Validates and executes scripts via the official `mcp-k6` server with strict pattern blocking and URL whitelisting.
 
 ---
 
@@ -30,65 +22,68 @@ By default, this solution uses **local Ollama (llama3)** inside the GitHub runne
 
 ```mermaid
 graph TD
-    A[PR Push] --> B[Detect Tech Stack]
-    B --> C[Setup Environment]
-    C --> D[Build & Start App]
-    D --> E[Health Check Poll]
-    E --> F[Run MCP Agent]
+    A[PR Push/Open] --> B[Detect Stack & Build]
+    B --> C[Start App & Health Check]
+    C --> D[Initialize MCP Agent]
     
-    subgraph "Pure MCP Bridge"
-    F <--> G((LLM Intelligence))
-    F <--> H[Official mcp-k6 Server]
+    subgraph "AI Tooling Layer"
+    D <--> E((LLM Provider))
+    D <--> F[Official mcp-k6 Server]
     end
     
-    H --> I[Execute k6 Test]
-    I --> J[Generate Final Report]
-    J --> K[Post Result to PR]
+    F --> G[k6 High-Performance Run]
+    G --> H[LLM Result Analysis]
+    H --> I[Post PR Summary Comment]
 ```
+
+---
+
+## 🧠 Multi-LLM Support
+
+Choose your intelligence level. The system defaults to **local Ollama** for 100% cost-free and private testing, but supports premium models via GitHub Secrets:
+
+| Provider | Default Model | Configuration | Cost |
+|----------|---------------|---------------|------|
+| **Ollama** | `llama3` | Default (Local) | **$0** (Free) |
+| **OpenAI** | `gpt-4o` | `LLM_PROVIDER: openai` | Token Based |
+| **Anthropic** | `claude-3-5-sonnet` | `LLM_PROVIDER: anthropic` | Token Based |
 
 ---
 
 ## 🚀 Quick Setup
 
-### Step 1 — Copy the files into your repo
-You only need these files:
-```
+### 1. Copy Files to Your Repo
+Drop these files into your repository at the exact paths:
+```text
 your-repo/
-├── .github/
-│   └── workflows/
-│       └── k6-performance-test.yml   ← The Workflow
+├── .github/workflows/k6-performance-test.yml
 ├── scripts/
-│   ├── mcp_agent.py                 ← The Pure MCP Bridge
-│   └── start.sh                      ← App Startup Script
-└── README.md
+│   ├── mcp_agent.py
+│   └── start.sh
+└── .env.example
 ```
 
-### Step 2 — Configure Secrets (Optional)
-If using OpenAI or Anthropic, add your `LLM_API_KEY` to **GitHub Settings → Secrets → Actions**.
+### 2. Configure Startup
+Edit `scripts/start.sh` and uncomment the block matching your technology stack. Ensure your app listens on **port 8080**.
 
-### Step 3 — Customize Startup
-Edit `scripts/start.sh` to ensure your application starts on port `8080`.
-
----
-
-## 📊 Sample Performance Report
-The LLM generates a professional Markdown report directly from the k6 metrics:
-
-| Metric | Value |
-|--------|-------|
-| **HTTP Request Duration** | avg: 1.49ms, p(95): 2.15ms |
-| **Success Rate** | 100% |
-| **Throughput** | 6,340 requests/sec |
+### 3. Set GitHub Secrets (Optional)
+If using cloud LLMs, add your `LLM_API_KEY` to **Settings → Secrets and variables → Actions**.
 
 ---
 
-## 🛠 Troubleshooting
+## 🛡️ Security & Privacy
+The solution is built with a **Security-First** mindset:
+*   **Execution Guard**: The `mcp-k6` server blocks dangerous patterns like `child_process`, `eval`, and filesystem access.
+*   **Whitelisting**: The MCP Agent strictly enforces that k6 scripts ONLY target `http://localhost:8080`.
+*   **In-Process Handshakes**: Communication between the agent and the server happens over standard `stdio`, never exposing tokens to the network.
 
-### Security Error: DANGEROUS_PATTERN
-The `mcp-k6` server has a security layer. If your LLM generates a script using `export default function()`, the server will block it. The **MCP Agent** automatically fixes this by converting it to an arrow function `export default () => {}`.
+---
 
-### Startup Timeout
-If your app takes >90s to start, increase the `sleep` or timeout in the workflow YAML.
+## 📂 Project Structure
+*   `.github/workflows/`: The GitHub Action automation.
+*   `scripts/mcp_agent.py`: The "Pure MCP" bridge (Dependency-free Python).
+*   `scripts/start.sh`: Standardized app startup script.
+*   `.env.example`: Template for LLM configuration.
 
 ---
 *Powered by [Grafana k6](https://k6.io) and [Model Context Protocol](https://modelcontextprotocol.io)*
