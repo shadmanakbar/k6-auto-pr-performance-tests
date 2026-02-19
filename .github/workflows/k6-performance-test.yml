@@ -1,4 +1,4 @@
-name: k6 Performance Tests (Pure MCP)
+name: k6 Performance Tests (HTTP MCP)
 
 on:
   pull_request:
@@ -16,15 +16,6 @@ jobs:
     steps:
       - name: Checkout PR branch
         uses: actions/checkout@v4
-
-      - name: Detect tech stack
-        id: detect-stack
-        run: |
-          STACK="unknown"
-          if [ -f "pom.xml" ]; then STACK="java-maven"
-          elif [ -f "package.json" ]; then STACK="node"
-          fi
-          echo "stack=$STACK" >> "$GITHUB_OUTPUT"
 
       - name: Setup Environment
         run: |
@@ -50,39 +41,48 @@ jobs:
           ./scripts/start.sh &
           sleep 15
 
-      # --- PURE MCP STEP ---
-      # We use a one-liner to call the MCP tools via the CLI
-      # This is the "Pure" way: No custom python scripts, just invoking tools.
-      - name: Run K6 via MCP
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Start MCP Server (HTTP Mode)
         run: |
-          echo "🤖 Invoking mcp-k6 tools directly..."
+          mcp-k6 -transport=http -addr=:8081 &
+          echo "⏳ Waiting for MCP HTTP server..."
+          for i in {1..30}; do
+            if curl -s http://localhost:8081/ > /dev/null; then
+              echo "✅ MCP Server ready"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Run K6 via HTTP MCP
+        id: run-mcp
+        run: |
+          echo "🤖 Calling mcp-k6 run_script tool via curl..."
           
-          # 1. Generate & Run via the 'run_script' tool
-          # We pass a baseline script and let MCP do the heavy lifting
-          RESULT=$(mcp-k6 --transport stdio <<EOF
-          {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-              "name": "run_script",
-              "arguments": {
-                "script": "import http from 'k6/http'; export default function() { http.get('http://localhost:8080/'); }",
-                "vus": 10,
-                "duration": "30s"
+          # Note: MCP HTTP transport usually uses POST to /mcp or similar
+          # As per README: -endpoint (default /mcp)
+          
+          RESPONSE=$(curl -s -X POST http://localhost:8081/mcp \
+            -H "Content-Type: application/json" \
+            -d '{
+              "jsonrpc": "2.0",
+              "id": 1,
+              "method": "tools/call",
+              "params": {
+                "name": "run_script",
+                "arguments": {
+                  "script": "import http from \"k6/http\"; export default function() { http.get(\"http://localhost:8080/\"); }",
+                  "vus": 10,
+                  "duration": "10s"
+                }
               }
-            }
-          }
-          EOF
-          )
+            }')
           
-          echo "📊 Results: $RESULT"
+          echo "📊 MCP Response: $RESPONSE"
           
-          # 2. Handle failure if success is false
-          if echo "$RESULT" | grep -q '"success":false'; then
-            echo "❌ Performance test failed"
-            exit 1
+          # Extract metrics and report (minimal check for success)
+          if echo "$RESPONSE" | grep -q '"success":true'; then
+             echo "✅ Test Passed"
+          else
+             echo "❌ Test Failed or Error in MCP"
+             exit 1
           fi
-          echo "✅ Performance test passed"
