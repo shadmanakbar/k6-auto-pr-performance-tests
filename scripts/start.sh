@@ -50,23 +50,18 @@ mkdir -p logs
 # gunicorn main:app --bind 0.0.0.0:8080 --workers 2 > logs/app.log 2>&1 &
 
 # ── Java · Spring Boot fat JAR ────────────────────────────────────────────────
-# The glob target/*.jar matches whichever jar Maven/Gradle produced.
-# java -jar target/*.jar --server.port=8080 > logs/app.log 2>&1 &
-
-# ── Java · Spring Boot (Gradle build dir) ─────────────────────────────────────
-# java -jar build/libs/*.jar --server.port=8080 > logs/app.log 2>&1 &
-
-# ── Go ────────────────────────────────────────────────────────────────────────
-# Replace "myapp" with the binary name produced by "go build ./..."
-# ./myapp > logs/app.log 2>&1 &
-
-# ── Ruby · Rails ──────────────────────────────────────────────────────────────
-# bundle exec rails server -p 8080 -b 0.0.0.0 > logs/app.log 2>&1 &
-
-# ── Ruby · Rack / Puma ────────────────────────────────────────────────────────
-# bundle exec puma -b tcp://0.0.0.0:8080 > logs/app.log 2>&1 &
+if ls target/*.jar >/dev/null 2>&1; then
+  echo "☕ Starting Java (Maven) JAR..."
+  java -jar target/*.jar --server.port=8080 > logs/app.log 2>&1 &
+elif ls build/libs/*.jar >/dev/null 2>&1; then
+  echo "☕ Starting Java (Gradle) JAR..."
+  java -jar build/libs/*.jar --server.port=8080 > logs/app.log 2>&1 &
+elif [ -f "package.json" ]; then
+  echo "🟢 Starting Node.js app..."
+  npm start > logs/app.log 2>&1 &
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 
-echo "🚀 App starting on port 8080 — check logs/app.log if the health check times out"
-echo "   Waited paths: /actuator/health → /health → / (first 2xx wins)"
+echo "🚀 App starting process initiated on port 8080"
+echo "   Checking logs/app.log if the health check times out"

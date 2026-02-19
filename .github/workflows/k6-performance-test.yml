@@ -17,6 +17,23 @@ jobs:
       - name: Checkout PR branch
         uses: actions/checkout@v4
 
+      - name: Detect tech stack
+        id: detect-stack
+        run: |
+          STACK="unknown"
+          if [ -f "pom.xml" ]; then STACK="java-maven"
+          elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then STACK="java-gradle"
+          elif [ -f "package.json" ]; then STACK="node"
+          fi
+          echo "stack=$STACK" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Java
+        if: contains(steps.detect-stack.outputs.stack, 'java')
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
       - name: Setup Environment
         run: |
           # Install k6 from official repo
@@ -35,11 +52,18 @@ jobs:
           ollama serve &
           sleep 5 && ollama pull llama3
 
+      - name: Build App
+        run: |
+          STACK="${{ steps.detect-stack.outputs.stack }}"
+          if [ "$STACK" == "java-maven" ]; then mvn -B package -DskipTests
+          elif [ "$STACK" == "node" ]; then npm install && (npm run build || true)
+          fi
+
       - name: Start App
         run: |
           chmod +x scripts/start.sh
           ./scripts/start.sh &
-          sleep 15
+          sleep 20
 
       - name: Start MCP Server (HTTP Mode)
         run: |
@@ -57,9 +81,6 @@ jobs:
         id: run-mcp
         run: |
           echo "🤖 Calling mcp-k6 run_script tool via curl..."
-          
-          # Note: MCP HTTP transport usually uses POST to /mcp or similar
-          # As per README: -endpoint (default /mcp)
           
           RESPONSE=$(curl -s -X POST http://localhost:8081/mcp \
             -H "Content-Type: application/json" \
@@ -79,7 +100,6 @@ jobs:
           
           echo "📊 MCP Response: $RESPONSE"
           
-          # Extract metrics and report (minimal check for success)
           if echo "$RESPONSE" | grep -q '"success":true'; then
              echo "✅ Test Passed"
           else
