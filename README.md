@@ -1,18 +1,12 @@
-# k6 Auto Performance Testing — GitHub Actions
+# 🚀 Automated k6 Performance Testing (MCP Powered)
 
-> **Zero-config automated performance testing for any backend PR.**  
-> Drop these four files into your repo — every pull request gets load-tested automatically, with AI-generated k6 scripts and rich PR comments showing metrics at a glance.
+This repository provides a **fully automated performance testing solution** for GitHub Pull Requests, now powered by the **Model Context Protocol (MCP)**. It uses a local MCP server and an orchestrator to dynamically generate, execute, and analyze k6 tests using Ollama (llama3).
 
----
-
-## Table of Contents
-
-1. [How It Works](#how-it-works)
-2. [Quick Setup](#quick-setup)
-3. [Stack Detection Reference](#stack-detection-reference)
-4. [Sample PR Comment](#sample-pr-comment)
-5. [Thresholds](#thresholds)
-6. [Troubleshooting](#troubleshooting)
+### 🧠 Why MCP?
+Unlike traditional CI scripts, the MCP-based architecture allows for:
+- **Direct Prompt-to-Execution**: No need to manually manage k6 scripts; the LLM handles generation on the fly via MCP tools.
+- **Modular Tools**: Execution logic, result formatting, and script generation are encapsulated as MCP tools.
+- **AI-Native Orchestration**: The workflow is driven by an orchestrator that "talks" to the tools, making it easy to swap LLMs or testing logic.
 
 ---
 
