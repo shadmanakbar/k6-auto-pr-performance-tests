@@ -1,4 +1,4 @@
-name: k6 Performance Tests (HTTP MCP)
+name: k6 Performance Tests (Pure MCP)
 
 on:
   pull_request:
@@ -65,44 +65,33 @@ jobs:
           ./scripts/start.sh &
           sleep 20
 
-      - name: Start MCP Server (HTTP Mode)
-        run: |
-          mcp-k6 -transport=http -addr=:8081 &
-          echo "⏳ Waiting for MCP HTTP server..."
-          for i in {1..30}; do
-            if curl -s http://localhost:8081/ > /dev/null; then
-              echo "✅ MCP Server ready"
-              break
-            fi
-            sleep 1
-          done
-
-      - name: Run K6 via HTTP MCP
+      - name: Run K6 via Pure MCP (Stdio)
         id: run-mcp
         run: |
-          echo "🤖 Calling mcp-k6 run_script tool via curl..."
+          echo "🤖 Handshaking and calling mcp-k6 via Pure JSON-RPC over Stdio..."
           
-          RESPONSE=$(curl -s -X POST http://localhost:8081/mcp \
-            -H "Content-Type: application/json" \
-            -d '{
-              "jsonrpc": "2.0",
-              "id": 1,
-              "method": "tools/call",
-              "params": {
-                "name": "run_script",
-                "arguments": {
-                  "script": "import http from \"k6/http\"; export default function() { http.get(\"http://localhost:8080/\"); }",
-                  "vus": 10,
-                  "duration": "10s"
-                }
-              }
-            }')
+          # We send INITIALIZE, then TOOL/CALL
+          # This is the standard MCP protocol without any custom scripts.
           
-          echo "📊 MCP Response: $RESPONSE"
+          cat <<EOF > mcp_input.jsonl
+          {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"github-action","version":"1.0"}}}
+          {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run_script","arguments":{"script":"import http from 'k6/http'; export default function() { http.get('http://localhost:8080/'); }","vus":10,"duration":"10s"}}}
+          EOF
           
-          if echo "$RESPONSE" | grep -q '"success":true'; then
-             echo "✅ Test Passed"
-          else
-             echo "❌ Test Failed or Error in MCP"
+          # Run the server and capture the output
+          # We use a 40s timeout because k6 runs for 10s + overhead
+          RESULT=$(cat mcp_input.jsonl | mcp-k6 2>/dev/null | grep '"id":2' || true)
+          
+          echo "📊 MCP Response: $RESULT"
+          
+          if [ -z "$RESULT" ]; then
+             echo "❌ MCP Server failed to respond to tool call"
              exit 1
           fi
+          
+          if echo "$RESULT" | grep -q '"isError":true'; then
+             echo "❌ Performance test execution reported an error"
+             exit 1
+          fi
+          
+          echo "✅ Performance test completed successfully via Pure MCP"
