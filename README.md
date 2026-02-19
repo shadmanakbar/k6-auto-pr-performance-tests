@@ -6,12 +6,18 @@ This repository provides a **fully automated performance testing solution** for 
 1. **Detects** your stack (Node, Java, Python, Go, Ruby).
 2. **Starts** your app in the background.
 3. **Generates** or reuses k6 scripts using local Ollama (llama3).
-4. **Validates & Executes** tests via the `mcp-k6` server's tools (`validate_script`, `run_script`).
-5. **Report** metrics (P95, RPS, Error Rate) back to the PR comment.
+4. **Validates & Executes** tests via the `mcp-k6` server's### 🧠 AI Intelligence (Multi-LLM)
+By default, this solution uses **local Ollama (llama3)** inside the GitHub runner. However, you can easily switch to premium models by setting these **GitHub Variables/Secrets**:
 
-### 🌟 Key Features
-- **Official Tools**: Uses the same logic as Grafana's internal performance testing experiments.
-- **Zero Config**: Drop the files into your repo and everything just works.
+- `LLM_PROVIDER`: `ollama` (default), `openai`, or `anthropic`.
+- `LLM_MODEL`: `llama3`, `gpt-4o`, `claude-3-5-sonnet-latest`, etc.
+- `LLM_API_KEY`: (Secret) Your OpenAI or Anthropic API key.
+
+### 🧩 How it Works
+1. **GitHub Action**: Sets up `k6`, `mcp-k6`, and the chosen LLM environment.
+2. **MCP Agent**: A lightweight Python bridge that connects your LLM to the official `mcp-k6` tools.
+3. **Official MCP tools**: Handle the heavy lifting of running k6 and validating scripts.
+ just works.
 - **AI-Native**: Built to work with modern AI agents and MCP-enabled environments.
 
 

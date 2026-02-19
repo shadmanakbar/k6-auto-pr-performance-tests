@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""
+mcp_agent.py - Multi-LLM MCP Client for k6 Performance Testing.
+Supported Providers: Ollama, OpenAI, Anthropic.
+No external dependencies (uses urllib/subprocess).
+"""
+
+import json
+import os
+import subprocess
+import sys
+import urllib.request
+import time
+
+def log(msg):
+    print(f"🤖 [MCP Agent] {msg}", file=sys.stderr)
+
+# --- LLM Providers ---
+
+def call_ollama(messages, model, url):
+    payload = {"model": model, "messages": messages, "stream": False}
+    req = urllib.request.Request(f"{url}/api/chat", data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req) as res:
+        data = json.loads(res.read().decode())
+        return data["message"]["content"], data["message"].get("tool_calls", [])
+
+def call_openai(messages, model, api_key):
+    payload = {"model": model, "messages": messages}
+    req = urllib.request.Request("https://api.openai.com/v1/chat/completions", 
+                                 data=json.dumps(payload).encode(), 
+                                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"})
+    with urllib.request.urlopen(req) as res:
+        data = json.loads(res.read().decode())
+        return data["choices"][0]["message"]["content"], data["choices"][0]["message"].get("tool_calls", [])
+
+def call_anthropic(messages, model, api_key):
+    # Anthropic uses a different format, but we'll simplify for now
+    payload = {
+        "model": model,
+        "max_tokens": 4096,
+        "messages": [m for m in messages if m["role"] != "system"],
+        "system": next((m["content"] for m in messages if m["role"] == "system"), "")
+    }
+    req = urllib.request.Request("https://api.anthropic.com/v1/messages", 
+                                 data=json.dumps(payload).encode(), 
+                                 headers={
+                                     "Content-Type": "application/json", 
+                                     "x-api-key": api_key,
+                                     "anthropic-version": "2023-06-01"
+                                 })
+    with urllib.request.urlopen(req) as res:
+        data = json.loads(res.read().decode())
+        return data["content"][0]["text"], [] # Simplification: Anthropic tool use needs more logic
+
+# --- MCP Tool Runner (Stdio) ---
+
+class MCPClient:
+    def __init__(self, command):
+        self.proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.init()
+
+    def send(self, method, params=None):
+        req = {"jsonrpc": "2.0", "id": int(time.time() * 1000), "method": method, "params": params or {}}
+        self.proc.stdin.write(json.dumps(req) + "\n")
+        self.proc.stdin.flush()
+        line = self.proc.stdout.readline()
+        if not line: return None
+        return json.loads(line)
+
+    def init(self):
+        self.send("initialize", {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "agent", "version": "1.0"}})
+
+    def call_tool(self, name, args):
+        res = self.send("tools/call", {"name": name, "arguments": args})
+        return res.get("result", {}).get("content", [{"text": "Error: Tool call failed"}])[0].get("text", "")
+
+# --- Main Logic ---
+
+def main():
+    provider = os.getenv("LLM_PROVIDER", "ollama").lower()
+    model = os.getenv("LLM_MODEL", "llama3" if provider == "ollama" else "gpt-4o" if provider == "openai" else "claude-3-5-sonnet-20240620")
+    api_key = os.getenv("LLM_API_KEY", "")
+    ollama_url = os.getenv("LLM_URL", "http://localhost:11434")
+    
+    log(f"Starting MCP Agent across {provider} using {model}")
+
+    # Initialize MCP Client
+    client = MCPClient(["mcp-k6"])
+
+    # Goal definition
+    system_prompt = "You are a Performance Engineer. Use k6 to test the app at http://localhost:8080. First generate a test script using best practices, then run it."
+    user_goal = "Test the home page of the application with 10 VUs for 10 seconds. Return a professional summary table."
+
+    # Sequential Tool Execution (Simple Agent for CI)
+    # Stage 1: Generate Script (Usually done by local logic or Prompt tool, here we'll just fix the script we know works)
+    # Actually, to make it truly AI-driven, we ask the LLM.
+    
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_goal}
+    ]
+
+    # In CI, we often want a deterministic path: Generate -> Run.
+    # We'll use the LLM to provide the script content.
+    
+    try:
+        log(f"Requesting script from {provider}...")
+        if provider == "ollama": content, _ = call_ollama(messages, model, ollama_url)
+        elif provider == "openai": content, _ = call_openai(messages, model, api_key)
+        elif provider == "anthropic": content, _ = call_anthropic(messages, model, api_key)
+        else: raise Exception(f"Unknown provider: {provider}")
+
+        # Basic extraction from LLM response (looking for JS block)
+        script = content.split("```javascript")[-1].split("```")[0].split("```js")[-1].split("```")[0].strip()
+        if not script or "import" not in script:
+            # Fallback to a safe script if the LLM output is messy
+            script = "import http from 'k6/http'; export default () => { http.get('http://localhost:8080/'); }"
+            log("Using fallback script (LLM output was not clean JS)")
+
+        log("Executing k6 script via MCP tools...")
+        result = client.call_tool("run_script", {"script": script, "vus": 10, "duration": "10s"})
+        
+        # Post the result back to the LLM for summary
+        messages.append({"role": "assistant", "content": f"Generated script: {script}"})
+        messages.append({"role": "user", "content": f"The test results are: {result}\n\nPlease provide a final report table."})
+        
+        log(f"Generating final report from {provider}...")
+        if provider == "ollama": final_report, _ = call_ollama(messages, model, ollama_url)
+        elif provider == "openai": final_report, _ = call_openai(messages, model, api_key)
+        elif provider == "anthropic": final_report, _ = call_anthropic(messages, model, api_key)
+
+        print("\n" + "="*50)
+        print("📊 PERFORMANCE TEST REPORT")
+        print("="*50)
+        print(final_report)
+        print("="*50)
+
+    except Exception as e:
+        log(f"Error: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

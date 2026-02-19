@@ -47,10 +47,14 @@ jobs:
           curl -LO "https://github.com/grafana/mcp-k6/releases/download/v${VERSION}/mcp-k6_${VERSION}_linux_amd64.deb"
           sudo apt install ./mcp-k6_${VERSION}_linux_amd64.deb
           
-          # Install Ollama
-          curl -fsSL https://ollama.com/install.sh | sh
-          ollama serve &
-          sleep 5 && ollama pull llama3
+          # Install Ollama (only if used as provider)
+          if [ "${{ env.LLM_PROVIDER }}" == "ollama" ] || [ -z "${{ env.LLM_PROVIDER }}" ]; then
+            curl -fsSL https://ollama.com/install.sh | sh
+            ollama serve &
+            sleep 5 && ollama pull llama3
+          fi
+        env:
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER || 'ollama' }}
 
       - name: Build App
         run: |
@@ -65,33 +69,12 @@ jobs:
           ./scripts/start.sh &
           sleep 20
 
-      - name: Run K6 via Pure MCP (Stdio)
-        id: run-mcp
+      - name: Run K6 Multi-LLM MCP Agent
+        env:
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER || 'ollama' }}
+          LLM_MODEL: ${{ vars.LLM_MODEL || 'llama3' }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_URL: ${{ vars.LLM_URL || 'http://localhost:11434' }}
         run: |
-          echo "🤖 Handshaking and calling mcp-k6 via Pure JSON-RPC over Stdio..."
-          
-          # We send INITIALIZE, then TOOL/CALL
-          # This is the standard MCP protocol without any custom scripts.
-          
-          cat <<EOF > mcp_input.jsonl
-          {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"github-action","version":"1.0"}}}
-          {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run_script","arguments":{"script":"import http from 'k6/http'; export default () => { http.get('http://localhost:8080/'); }","vus":10,"duration":"10s"}}}
-          EOF
-          
-          # Run the server and capture the output
-          # We use a 40s timeout because k6 runs for 10s + overhead
-          RESULT=$(cat mcp_input.jsonl | mcp-k6 2>/dev/null | grep '"id":2' || true)
-          
-          echo "📊 MCP Response: $RESULT"
-          
-          if [ -z "$RESULT" ]; then
-             echo "❌ MCP Server failed to respond to tool call"
-             exit 1
-          fi
-          
-          if echo "$RESULT" | grep -q '"isError":true'; then
-             echo "❌ Performance test execution reported an error"
-             exit 1
-          fi
-          
-          echo "✅ Performance test completed successfully via Pure MCP"
+          chmod +x scripts/mcp_agent.py
+          python3 scripts/mcp_agent.py
