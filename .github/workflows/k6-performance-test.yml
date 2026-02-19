@@ -1,4 +1,4 @@
-name: k6 Performance Tests (MCP Powered)
+name: k6 Performance Tests (MCP Simplifed)
 
 on:
   pull_request:
@@ -9,7 +9,7 @@ permissions:
   pull-requests: write
 
 jobs:
-  k6-mcp-test:
+  k6-performance-test:
     runs-on: ubuntu-latest
     timeout-minutes: 35
 
@@ -41,18 +41,13 @@ jobs:
           fi
           echo "stack=$STACK" >> "$GITHUB_OUTPUT"
 
-      # --- Setup Runtimes ---
+      # --- Setup ---
       - name: Setup Java
         if: contains(steps.detect-stack.outputs.stack, 'java')
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
-      - name: Setup Node.js (for MCP Server)
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
 
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -72,10 +67,10 @@ jobs:
         run: |
           chmod +x scripts/start.sh
           bash scripts/start.sh &
-          sleep 10 # Basic wait, MCP server can handle health checks if needed
+          sleep 10
 
-      # --- Install K6 & Ollama (MCP Tools dependencies) ---
-      - name: Install dependencies
+      # --- Install Dependencies (k6, Ollama, Official mcp-k6) ---
+      - name: Install performance tools
         run: |
           # Install k6
           sudo gpg -k
@@ -83,20 +78,19 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
           sudo apt-get update -qq && sudo apt-get install -y k6
           
+          # Install Official mcp-k6 (using .deb package for speed)
+          VERSION="0.5.0"
+          curl -LO "https://github.com/grafana/mcp-k6/releases/download/v${VERSION}/mcp-k6_${VERSION}_linux_amd64.deb"
+          sudo apt install ./mcp-k6_${VERSION}_linux_amd64.deb
+          mcp-k6 --version
+
           # Install Ollama
           curl -fsSL https://ollama.com/install.sh | sh
           ollama serve &
           sleep 5
           ollama pull llama3
 
-      # --- Prepare MCP Server ---
-      - name: Prepare MCP Server
-        run: |
-          cd mcp-server
-          npm install
-          npm run build
-
-      # --- Execute MCP Orchestrator ---
+      # --- Execute ---
       - name: Run K6 MCP Orchestrator
         env:
           DETECTED_STACK: ${{ steps.detect-stack.outputs.stack }}

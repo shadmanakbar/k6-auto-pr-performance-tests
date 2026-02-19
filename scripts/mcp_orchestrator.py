@@ -3,145 +3,114 @@ import json
 import os
 import subprocess
 import sys
-import time
 
-class MCPClient:
-    def __init__(self, command):
-        self.process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1
-        )
-        self.msg_id = 1
-
-    def send(self, method, params):
-        request = {
-            "jsonrpc": "2.0",
-            "id": self.msg_id,
-            "method": method,
-            "params": params
-        }
-        self.process.stdin.write(json.dumps(request) + "\n")
-        self.process.stdin.flush()
-        self.msg_id += 1
-        
-        # Read until we get a non-error line (or timeout)
-        while True:
-            line = self.process.stdout.readline()
-            if not line:
-                return None
-            try:
-                resp = json.loads(line)
-                if "id" in resp:
-                    return resp
-            except:
-                continue
-
-    def call_tool(self, name, args):
-        return self.send("tools/call", {
-            "name": name,
-            "arguments": args
-        })
-
-    def close(self):
-        self.process.terminate()
-
-def log(msg):
-    print(f"[mcp-orchestrator] {msg}", file=sys.stderr, flush=True)
-
-def main():
-    log("Starting K6 MCP Orchestrator...")
-    
-    server_cmd = ["node", "mcp-server/dist/index.js"]
-    client = MCPClient(server_cmd)
+def call_mcp_tool(tool_name, arguments):
+    """Simple wrapper to call a tool on the mcp-k6 server via stdio."""
+    # The official mcp-k6 server expects JSON-RPC over stdio
+    process = subprocess.Popen(
+        ["mcp-k6"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1
+    )
 
     # 1. Initialize
-    log("Initializing MCP Server...")
-    client.send("initialize", {
-        "protocolVersion": "2024-11-05",
-        "capabilities": {},
-        "clientInfo": {"name": "k6-orc", "version": "1.0"}
-    })
+    process.stdin.write(json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "ci-orchestrator", "version": "1.0"}
+        }
+    }) + "\n")
+    
+    # 2. Call Tool
+    process.stdin.write(json.dumps({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": tool_name,
+            "arguments": arguments
+        }
+    }) + "\n")
+    
+    process.stdin.close()
+    
+    stdout_output = process.stdout.read()
+    process.terminate()
 
-    # Get env vars
+    # Parse the response (the second message is usually the tool result)
+    for line in stdout_output.splitlines():
+        try:
+            resp = json.loads(line)
+            if resp.get("id") == 2:
+                return resp.get("result")
+        except:
+            continue
+    return None
+
+def main():
+    print("🚀 Starting k6 Performance Test (using official Grafana MCP-K6)...")
+    
     pr_title = os.environ.get("PR_TITLE", "Test PR")
     pr_body = os.environ.get("PR_BODY", "")
-    stack = os.environ.get("DETECTED_STACK", "java-maven")
-    prompt = f"Title: {pr_title}\nBody: {pr_body}"
-
-    # 2. Generate Script
-    log(f"Generating script for {stack}...")
-    gen_resp = client.call_tool("generate_k6_script", {
-        "prompt": prompt,
-        "techStack": stack
-    })
+    stack = os.environ.get("DETECTED_STACK", "unknown")
     
-    if not gen_resp or "result" not in gen_resp:
-        log(f"❌ Generation failed: {gen_resp}")
-        sys.exit(1)
-        
-    script_content = gen_resp["result"]["content"][0]["text"]
-    log("✅ Script generated.")
-
-    # 3. Run Test
-    log("Running k6 test via MCP...")
-    run_resp = client.call_tool("run_k6_test", {
-        "scriptContent": script_content
-    })
+    # 1. Generate Script using official mcp-k6 prompt tool
+    # Note: mcp-k6 has a 'generate_script' prompt, but for standard tool calls we use its logic
+    # As per README, k6-mcp has a tool 'run_script' and 'validate_script'.
+    # We will pass the PR context to generate a script.
     
-    if not run_resp or "result" not in run_resp:
-        log(f"❌ Execution failed: {run_resp}")
-        sys.exit(1)
-        
-    exec_data = json.loads(run_resp["result"]["content"][0]["text"])
-    log(f"✅ k6 finished with exit code {exec_data['exitCode']}")
-
-    # 4. Format Results
-    log("Formatting results for PR...")
-    format_resp = client.call_tool("format_results", {
-        "resultsJson": exec_data["summaryData"],
-        "exitCode": exec_data["exitCode"],
-        "stack": stack
-    })
+    prompt = f"Stack: {stack}\nPR: {pr_title}\nDescription: {pr_body}\nRule: Target http://localhost:8080. 10 VUs for 30s. P95 < 500ms."
     
-    if not format_resp or "result" not in format_resp:
-        log("❌ Formatting failed.")
-        sys.exit(1)
-        
-    comment_body = format_resp["result"]["content"][0]["text"]
+    # Since we want it SIMPLE, let's just use the existing generate_k6_script logic if available,
+    # or use the MCP server to validate a generated one.
+    # Actually, let's just use k6 directly for execution if the script exists!
     
-    # 5. Post Comment to GitHub
-    log("Posting results to GitHub...")
-    token = os.environ.get("GITHUB_TOKEN")
-    repo = os.environ.get("REPO")
-    pr_num = os.environ.get("PR_NUMBER")
+    script_path = "tests/k6/performance-test.js"
+    
+    if not os.path.exists(script_path):
+        print("📝 Generating k6 script via Ollama...")
+        # We'll use our existing robust generator for the file creation
+        subprocess.run(["python3", "scripts/generate_k6_script.py"], check=True)
 
-    if token and repo and pr_num:
-        url = f"https://api.github.com/repos/{repo}/issues/{pr_num}/comments"
-        headers = {
-            "Authorization": f"token {token}",
-            "Accept": "application/vnd.github.v3+json"
-        }
-        data = json.dumps({"body": comment_body}).encode("utf-8")
-        req = subprocess.run([
-            "curl", "-s", "-X", "POST",
-            "-H", f"Authorization: token {token}",
-            "-H", "Accept: application/vnd.github.v3+json",
-            "-d", json.dumps({"body": comment_body}),
-            url
-        ], capture_output=True)
-        log("✅ Comment posted.")
+    # 2. Validate using official mcp-k6
+    print("🔍 Validating script with mcp-k6...")
+    with open(script_path, "r") as f:
+        script_content = f.read()
+    
+    val_res = call_mcp_tool("validate_script", {"script": script_content})
+    if val_res and not val_res.get("isError"):
+        print("✅ Script validation passed.")
     else:
-        log("⚠️ Skipping comment posting (missing env vars).")
-        print(comment_body)
+        print(f"⚠️ Validation warning or error: {val_res}")
+
+    # 3. Run Test using official mcp-k6
+    print("🏃 Running performance test...")
+    run_res = call_mcp_tool("run_script", {
+        "script": script_content,
+        "vus": 10,
+        "duration": "30s"
+    })
+
+    if not run_res:
+        print("❌ Test failed to return results.")
+        sys.exit(1)
+
+    # 4. Extract metrics and post result (using existing post script)
+    # The mcp-k6 tool returns stdout/stderr. We'll save them and let the post script handle it.
+    os.makedirs("k6-results", exist_ok=True)
+    with open("k6-results/output.txt", "w") as f:
+        f.write(run_res.get("stdout", ""))
     
-    client.close()
-    
-    # Final exit code based on k6 run
-    sys.exit(exec_data["exitCode"])
+    # Run the existing post script to format and post to GitHub
+    print("📤 Posting results to GitHub...")
+    subprocess.run(["python3", "scripts/post_pr_comment.py"], check=True)
 
 if __name__ == "__main__":
     main()

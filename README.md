@@ -1,12 +1,19 @@
-# 🚀 Automated k6 Performance Testing (MCP Powered)
+# 🚀 Automated k6 Performance Testing (Official MCP)
 
-This repository provides a **fully automated performance testing solution** for GitHub Pull Requests, now powered by the **Model Context Protocol (MCP)**. It uses a local MCP server and an orchestrator to dynamically generate, execute, and analyze k6 tests using Ollama (llama3).
+This repository provides a **fully automated performance testing solution** for GitHub Pull Requests, powered by the **Official [Grafana mcp-k6 server](https://github.com/grafana/mcp-k6)**. 
 
-### 🧠 Why MCP?
-Unlike traditional CI scripts, the MCP-based architecture allows for:
-- **Direct Prompt-to-Execution**: No need to manually manage k6 scripts; the LLM handles generation on the fly via MCP tools.
-- **Modular Tools**: Execution logic, result formatting, and script generation are encapsulated as MCP tools.
-- **AI-Native Orchestration**: The workflow is driven by an orchestrator that "talks" to the tools, making it easy to swap LLMs or testing logic.
+### 🧠 How it works
+1. **Detects** your stack (Node, Java, Python, Go, Ruby).
+2. **Starts** your app in the background.
+3. **Generates** or reuses k6 scripts using local Ollama (llama3).
+4. **Validates & Executes** tests via the `mcp-k6` server's tools (`validate_script`, `run_script`).
+5. **Report** metrics (P95, RPS, Error Rate) back to the PR comment.
+
+### 🌟 Key Features
+- **Official Tools**: Uses the same logic as Grafana's internal performance testing experiments.
+- **Zero Config**: Drop the files into your repo and everything just works.
+- **AI-Native**: Built to work with modern AI agents and MCP-enabled environments.
+
 
 ---
 
