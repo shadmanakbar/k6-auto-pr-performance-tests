@@ -1,0 +1,313 @@
+name: k6 Performance Tests
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  k6-performance-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_BODY: ${{ github.event.pull_request.body }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      REPO: ${{ github.repository }}
+
+    steps:
+      # ─────────────────────────────────────────────────────────────
+      # 1. Checkout PR branch
+      # ─────────────────────────────────────────────────────────────
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ─────────────────────────────────────────────────────────────
+      # 2. Detect tech stack from files in repo root
+      # ─────────────────────────────────────────────────────────────
+      - name: Detect tech stack
+        id: detect-stack
+        run: |
+          STACK="unknown"
+
+          if [ -f "pom.xml" ]; then
+            STACK="java-maven"
+          elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
+            STACK="java-gradle"
+          elif [ -f "package.json" ]; then
+            STACK="node"
+          elif [ -f "requirements.txt" ] || [ -f "pyproject.toml" ]; then
+            STACK="python"
+          elif [ -f "go.mod" ]; then
+            STACK="go"
+          elif [ -f "Gemfile" ]; then
+            STACK="ruby"
+          fi
+
+          echo "stack=$STACK" >> "$GITHUB_OUTPUT"
+          echo "✅ Detected stack: $STACK"
+
+      # ─────────────────────────────────────────────────────────────
+      # 3a. Set up Java (Maven)
+      # ─────────────────────────────────────────────────────────────
+      - name: Set up Java (Maven)
+        if: steps.detect-stack.outputs.stack == 'java-maven'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      # 3b. Set up Java (Gradle)
+      - name: Set up Java (Gradle)
+        if: steps.detect-stack.outputs.stack == 'java-gradle'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      # 3c. Set up Node.js
+      - name: Set up Node.js
+        if: steps.detect-stack.outputs.stack == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      # 3d. Set up Python
+      - name: Set up Python
+        if: steps.detect-stack.outputs.stack == 'python'
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      # 3e. Set up Go
+      - name: Set up Go
+        if: steps.detect-stack.outputs.stack == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      # 3f. Set up Ruby
+      - name: Set up Ruby
+        if: steps.detect-stack.outputs.stack == 'ruby'
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+
+      # ─────────────────────────────────────────────────────────────
+      # 4. Build the application
+      # ─────────────────────────────────────────────────────────────
+      - name: Build (Java Maven)
+        if: steps.detect-stack.outputs.stack == 'java-maven'
+        run: mvn -B package -DskipTests --no-transfer-progress
+
+      - name: Build (Java Gradle)
+        if: steps.detect-stack.outputs.stack == 'java-gradle'
+        run: |
+          if [ -f "gradlew" ]; then
+            chmod +x gradlew
+            ./gradlew build -x test --no-daemon
+          else
+            gradle build -x test --no-daemon
+          fi
+
+      - name: Build (Node.js)
+        if: steps.detect-stack.outputs.stack == 'node'
+        run: |
+          npm install
+          # Run build script only if it is defined in package.json
+          if node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.build ? 0 : 1)" 2>/dev/null; then
+            npm run build
+          else
+            echo "ℹ️  No build script found in package.json — skipping npm run build"
+          fi
+
+      - name: Build (Python)
+        if: steps.detect-stack.outputs.stack == 'python'
+        run: |
+          if [ -f "requirements.txt" ]; then
+            pip install -r requirements.txt
+          elif [ -f "pyproject.toml" ]; then
+            pip install .
+          fi
+
+      - name: Build (Go)
+        if: steps.detect-stack.outputs.stack == 'go'
+        run: go build ./...
+
+      - name: Build (Ruby)
+        if: steps.detect-stack.outputs.stack == 'ruby'
+        run: bundle install
+
+      # ─────────────────────────────────────────────────────────────
+      # 5. Start the application in the background
+      # ─────────────────────────────────────────────────────────────
+      - name: Start application
+        run: |
+          if [ ! -f "scripts/start.sh" ]; then
+            echo "❌ scripts/start.sh not found!"
+            echo "   Please create this file and commit it. See README.md for instructions."
+            exit 1
+          fi
+          chmod +x scripts/start.sh
+          bash scripts/start.sh &
+          echo "🚀 Application start command issued (PID group backgrounded)"
+
+      # ─────────────────────────────────────────────────────────────
+      # 6. Health check — try multiple paths, first 2xx wins
+      # ─────────────────────────────────────────────────────────────
+      - name: Wait for application health check
+        run: |
+          HEALTH_PATHS=("/actuator/health" "/health" "/")
+          TIMEOUT=90
+          INTERVAL=2
+          ELAPSED=0
+          BASE_URL="http://localhost:8080"
+          HEALTHY_PATH=""
+
+          echo "⏳ Waiting for app at $BASE_URL (timeout: ${TIMEOUT}s) ..."
+
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            for PATH_SUFFIX in "${HEALTH_PATHS[@]}"; do
+              URL="${BASE_URL}${PATH_SUFFIX}"
+              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 "$URL" 2>/dev/null || echo "000")
+              if [[ "$HTTP_CODE" =~ ^2 ]]; then
+                HEALTHY_PATH="$PATH_SUFFIX"
+                echo "✅ App is healthy! Path: $URL returned HTTP $HTTP_CODE after ${ELAPSED}s"
+                break 2
+              fi
+            done
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+            echo "   ... ${ELAPSED}s elapsed — still waiting"
+          done
+
+          if [ -z "$HEALTHY_PATH" ]; then
+            echo "❌ App did not become healthy within ${TIMEOUT}s"
+            echo "   Tried paths: ${HEALTH_PATHS[*]}"
+            echo "--- App logs (if available) ---"
+            cat logs/app.log 2>/dev/null || echo "(no logs/app.log found)"
+            exit 1
+          fi
+
+      # ─────────────────────────────────────────────────────────────
+      # 7. Install k6
+      # ─────────────────────────────────────────────────────────────
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring \
+            --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
+            --keyserver hkp://keyserver.ubuntu.com:80 \
+            --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
+            | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update -qq
+          sudo apt-get install -y k6
+          k6 version
+
+      # ─────────────────────────────────────────────────────────────
+      # 8. Check if k6 test script already exists
+      # ─────────────────────────────────────────────────────────────
+      - name: Check for existing k6 script
+        id: check-k6-script
+        run: |
+          if [ -f "tests/k6/performance-test.js" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "✅ Found existing tests/k6/performance-test.js — will reuse it"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "ℹ️  No existing k6 script found — will generate via Groq API"
+          fi
+
+      # ─────────────────────────────────────────────────────────────
+      # 9. Generate k6 script via Groq API (only if not exists)
+      # ─────────────────────────────────────────────────────────────
+      - name: Generate k6 script via Groq AI
+        id: generate-script
+        if: steps.check-k6-script.outputs.exists == 'false'
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          DETECTED_STACK: ${{ steps.detect-stack.outputs.stack }}
+        run: |
+          mkdir -p tests/k6
+          python3 scripts/generate_k6_script.py
+          echo "generated=true" >> "$GITHUB_OUTPUT"
+
+      # ─────────────────────────────────────────────────────────────
+      # 10. Commit generated k6 script back to the PR branch
+      # ─────────────────────────────────────────────────────────────
+      - name: Commit generated k6 script to PR branch
+        if: steps.check-k6-script.outputs.exists == 'false' && steps.generate-script.outputs.generated == 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add tests/k6/performance-test.js
+          git diff --staged --quiet || \
+            git commit -m "ci: add generated k6 performance test script [skip ci]"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+          echo "✅ Committed and pushed generated k6 script"
+
+      # ─────────────────────────────────────────────────────────────
+      # 11. Run k6 performance tests
+      # ─────────────────────────────────────────────────────────────
+      - name: Run k6 performance tests
+        id: run-k6
+        continue-on-error: true
+        run: |
+          mkdir -p k6-results
+          k6 run \
+            --summary-export=k6-results/summary.json \
+            --out json=k6-results/raw.json \
+            tests/k6/performance-test.js 2>&1 | tee k6-results/output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      # ─────────────────────────────────────────────────────────────
+      # 12. Post PR comment with results (always runs)
+      # ─────────────────────────────────────────────────────────────
+      - name: Post k6 results as PR comment
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          K6_EXIT_CODE: ${{ steps.run-k6.outputs.exit_code }}
+          SCRIPT_WAS_GENERATED: ${{ steps.check-k6-script.outputs.exists == 'false' && steps.generate-script.outputs.generated == 'true' }}
+          DETECTED_STACK: ${{ steps.detect-stack.outputs.stack }}
+        run: python3 scripts/post_pr_comment.py
+
+      # ─────────────────────────────────────────────────────────────
+      # 13. Upload k6 results as artifact
+      # ─────────────────────────────────────────────────────────────
+      - name: Upload k6 results artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-results-pr-${{ github.event.pull_request.number }}
+          path: k6-results/
+          retention-days: 30
+
+      # ─────────────────────────────────────────────────────────────
+      # 14. Fail the job if k6 thresholds were breached
+      # ─────────────────────────────────────────────────────────────
+      - name: Fail if k6 thresholds were breached
+        if: steps.run-k6.outputs.exit_code != '0'
+        run: |
+          echo "❌ k6 performance thresholds were breached (exit code: ${{ steps.run-k6.outputs.exit_code }})"
+          echo "   Review the PR comment and k6-results artifact for details."
+          exit 1
