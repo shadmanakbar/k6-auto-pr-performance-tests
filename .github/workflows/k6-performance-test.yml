@@ -11,15 +11,15 @@ permissions:
 jobs:
   k6-performance-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35  # extra time for Ollama model pull on first run
 
     env:
-      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PR_TITLE: ${{ github.event.pull_request.title }}
       PR_BODY: ${{ github.event.pull_request.body }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       REPO: ${{ github.repository }}
+      OLLAMA_HOST: http://localhost:11434
 
     steps:
       # ─────────────────────────────────────────────────────────────
@@ -230,20 +230,51 @@ jobs:
             echo "✅ Found existing tests/k6/performance-test.js — will reuse it"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "ℹ️  No existing k6 script found — will generate via Groq API"
+            echo "ℹ️  No existing k6 script found — will generate via Ollama (llama3)"
           fi
 
       # ─────────────────────────────────────────────────────────────
-      # 9. Generate k6 script via Groq API (only if not exists)
+      # 9a. Install Ollama + pull llama3 (only if k6 script missing)
       # ─────────────────────────────────────────────────────────────
-      - name: Generate k6 script via Groq AI
+      - name: Install Ollama
+        if: steps.check-k6-script.outputs.exists == 'false'
+        run: |
+          echo "📦 Installing Ollama ..."
+          curl -fsSL https://ollama.com/install.sh | sh
+          # Start the Ollama server in background
+          ollama serve &
+          OLLAMA_PID=$!
+          echo "OLLAMA_PID=$OLLAMA_PID" >> "$GITHUB_ENV"
+          # Wait for Ollama API to become ready
+          echo "⏳ Waiting for Ollama to start ..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; then
+              echo "✅ Ollama is ready"
+              break
+            fi
+            echo "   ... ${i}s elapsed"
+            sleep 1
+          done
+
+      - name: Pull llama3 model
+        if: steps.check-k6-script.outputs.exists == 'false'
+        run: |
+          echo "🦙 Pulling llama3 model (this may take a few minutes on first run) ..."
+          ollama pull llama3
+          echo "✅ llama3 model ready"
+          ollama list
+
+      # ─────────────────────────────────────────────────────────────
+      # 9b. Generate k6 script via Ollama llama3 (only if not exists)
+      # ─────────────────────────────────────────────────────────────
+      - name: Generate k6 script via Ollama llama3
         id: generate-script
         if: steps.check-k6-script.outputs.exists == 'false'
         env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
           DETECTED_STACK: ${{ steps.detect-stack.outputs.stack }}
+          OLLAMA_HOST: http://localhost:11434
         run: |
           mkdir -p tests/k6
           python3 scripts/generate_k6_script.py
@@ -289,6 +320,7 @@ jobs:
           K6_EXIT_CODE: ${{ steps.run-k6.outputs.exit_code }}
           SCRIPT_WAS_GENERATED: ${{ steps.check-k6-script.outputs.exists == 'false' && steps.generate-script.outputs.generated == 'true' }}
           DETECTED_STACK: ${{ steps.detect-stack.outputs.stack }}
+          LLM_BACKEND: ollama-llama3
         run: python3 scripts/post_pr_comment.py
 
       # ─────────────────────────────────────────────────────────────

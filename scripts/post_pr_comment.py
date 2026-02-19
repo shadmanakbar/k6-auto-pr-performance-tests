@@ -9,8 +9,9 @@ Environment variables required:
   PR_NUMBER           – Pull request number
   REPO                – Repository in "owner/repo" format
   K6_EXIT_CODE        – Exit code from the k6 run step
-  SCRIPT_WAS_GENERATED – "true" if Groq generated the script, "false" if reused
+  SCRIPT_WAS_GENERATED – "true" if Ollama generated the script, "false" if reused
   DETECTED_STACK      – Tech stack string (e.g. "node", "python")
+  LLM_BACKEND         – LLM backend label (default: ollama-llama3)
 """
 
 import json
@@ -140,6 +141,7 @@ def build_comment(
     k6_exit_code: str,
     script_was_generated: bool,
     detected_stack: str,
+    llm_backend: str,
     k6_output_tail: str,
 ) -> str:
     """Assemble the full markdown comment."""
@@ -151,7 +153,7 @@ def build_comment(
     # ── Script origin note ────────────────────────────────────────────
     if script_was_generated:
         script_note = (
-            f"> 🤖 **AI-generated k6 script** — created by Groq Llama3 for "
+            f"> 🤖 **AI-generated k6 script** — created by `{llm_backend}` for "
             f"the `{detected_stack}` stack and committed back to this PR branch. "
             f"It will be reused on future pushes."
         )
@@ -236,7 +238,7 @@ def build_comment(
 </details>
 
 ---
-*Powered by [k6](https://k6.io) + [Groq Llama3](https://console.groq.com) · Stack detected: `{detected_stack}`*
+*Powered by [k6](https://k6.io) + `{llm_backend}` (local Ollama) · Stack detected: `{detected_stack}`*
 """
     return comment.strip()
 
@@ -282,6 +284,7 @@ def main() -> None:
     k6_exit_code= os.environ.get("K6_EXIT_CODE",        "1").strip()
     was_gen_raw = os.environ.get("SCRIPT_WAS_GENERATED","false").strip().lower()
     stack       = os.environ.get("DETECTED_STACK",      "unknown").strip()
+    llm_backend = os.environ.get("LLM_BACKEND",         "ollama-llama3").strip()
 
     script_was_generated = was_gen_raw == "true"
 
@@ -289,6 +292,7 @@ def main() -> None:
     log(f"PR Number   : {pr_number}")
     log(f"k6 Exit Code: {k6_exit_code}")
     log(f"Stack       : {stack}")
+    log(f"LLM Backend : {llm_backend}")
     log(f"Generated   : {script_was_generated}")
 
     if not token:
@@ -314,6 +318,7 @@ def main() -> None:
         k6_exit_code=k6_exit_code,
         script_was_generated=script_was_generated,
         detected_stack=stack,
+        llm_backend=llm_backend,
         k6_output_tail=k6_output_tail,
     )
 

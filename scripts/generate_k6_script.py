@@ -2,32 +2,33 @@
 """
 generate_k6_script.py
 ─────────────────────
-Calls the Groq API (llama3-70b-8192) to generate a k6 performance test
-script based on the PR title, body, and detected tech stack.
+Calls a locally running Ollama instance (llama3) to generate a k6
+performance test script based on the PR title, body, and detected stack.
 
-Environment variables required:
-  GROQ_API_KEY    – Groq API key (from repository secret)
+Environment variables:
+  OLLAMA_HOST     – Ollama base URL (default: http://localhost:11434)
   PR_TITLE        – GitHub PR title
   PR_BODY         – GitHub PR body / description
   DETECTED_STACK  – Tech stack detected by the workflow (e.g. "node", "python")
 
 Output:
   tests/k6/performance-test.js
+
+No external dependencies — stdlib only.
 """
 
 import json
 import os
+import re
 import sys
 import urllib.request
 import urllib.error
-import re
 
 # ─── Configuration ────────────────────────────────────────────────────────────
-GROQ_API_URL  = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL    = "llama3-70b-8192"
-OUTPUT_FILE   = "tests/k6/performance-test.js"
+OLLAMA_MODEL   = "llama3"
+OUTPUT_FILE    = "tests/k6/performance-test.js"
 
-# ─── Fallback script (used when Groq fails or output is invalid) ─────────────
+# ─── Fallback script (used when Ollama fails or output is invalid) ────────────
 FALLBACK_SCRIPT = """\
 import http from 'k6/http';
 import { check, group, sleep } from 'k6';
@@ -111,11 +112,11 @@ def log(msg: str) -> None:
 
 def strip_markdown_fences(text: str) -> str:
     """Remove markdown code fences that the model may add despite instructions."""
-    # Remove ```javascript ... ``` or ```js ... ``` or ``` ... ```
-    text = re.sub(r"^```[a-zA-Z]*\n", "", text.strip())
-    text = re.sub(r"\n```\s*$", "", text)
     text = text.strip()
-    return text
+    # Remove ```javascript ... ``` or ```js ... ``` or ``` ... ```
+    text = re.sub(r"^```[a-zA-Z]*\s*\n?", "", text)
+    text = re.sub(r"\n?```\s*$", "", text)
+    return text.strip()
 
 
 def validate_k6_script(script: str) -> bool:
@@ -129,26 +130,27 @@ def validate_k6_script(script: str) -> bool:
     return True
 
 
-def call_groq_api(api_key: str, pr_title: str, pr_body: str, stack: str) -> str:
-    """Call Groq API and return the raw response text."""
-    user_message = f"""
-Tech stack detected: {stack}
+def call_ollama_chat(host: str, pr_title: str, pr_body: str, stack: str) -> str:
+    """
+    Call Ollama's OpenAI-compatible /v1/chat/completions endpoint.
+    Returns the assistant's message content string.
+    """
+    url = f"{host.rstrip('/')}/v1/chat/completions"
 
-PR Title: {pr_title}
-
-PR Description:
-{pr_body or '(No description provided)'}
-
-Based on the above PR information and tech stack, generate a k6 performance test script
-that tests the most likely REST API endpoints this PR touches or introduces.
-If the PR description does not mention specific endpoints, generate a general health-check
-test for GET / and GET /health.
-""".strip()
+    user_message = (
+        f"Tech stack detected: {stack}\n\n"
+        f"PR Title: {pr_title}\n\n"
+        f"PR Description:\n{pr_body or '(No description provided)'}\n\n"
+        "Based on the above PR information and tech stack, generate a k6 performance test script "
+        "that tests the most likely REST API endpoints this PR touches or introduces. "
+        "If the PR description does not mention specific endpoints, generate a general health-check "
+        "test for GET / and GET /health."
+    )
 
     payload = {
-        "model": GROQ_MODEL,
+        "model":       OLLAMA_MODEL,
         "temperature": 0.2,
-        "max_tokens": 2048,
+        "stream":      False,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user",   "content": user_message},
@@ -157,39 +159,82 @@ test for GET / and GET /health.
 
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
-        GROQ_API_URL,
+        url,
         data=body,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type":  "application/json",
-        },
+        headers={"Content-Type": "application/json"},
         method="POST",
     )
 
-    log(f"📡 Calling Groq API (model: {GROQ_MODEL}) ...")
+    log(f"📡 Calling Ollama ({url}, model: {OLLAMA_MODEL}) ...")
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        # Ollama inference can be slow on CPU — allow up to 10 minutes
+        with urllib.request.urlopen(req, timeout=600) as resp:
             raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
         error_body = e.read().decode("utf-8", errors="replace")
-        log(f"❌ Groq API HTTP error {e.code}: {error_body}")
+        log(f"❌ Ollama HTTP error {e.code}: {error_body}")
         raise
     except urllib.error.URLError as e:
-        log(f"❌ Network error calling Groq API: {e.reason}")
+        log(f"❌ Network error calling Ollama: {e.reason}")
         raise
 
     data = json.loads(raw)
 
-    # Parse the assistant message content
     try:
         content = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError) as e:
-        log(f"❌ Unexpected Groq API response structure: {data}")
-        raise ValueError(f"Cannot parse Groq response: {e}") from e
+        log(f"❌ Unexpected Ollama response structure: {json.dumps(data, indent=2)[:500]}")
+        raise ValueError(f"Cannot parse Ollama response: {e}") from e
 
     usage = data.get("usage", {})
-    log(f"✅ Groq API responded — tokens used: {usage}")
+    log(f"✅ Ollama responded — tokens: {usage}")
+    return content
 
+
+def call_ollama_generate(host: str, pr_title: str, pr_body: str, stack: str) -> str:
+    """
+    Fallback: use Ollama's native /api/generate endpoint if /v1 is not available.
+    Returns the generated text string.
+    """
+    url = f"{host.rstrip('/')}/api/generate"
+
+    prompt = (
+        f"<s>[INST] <<SYS>>\n{SYSTEM_PROMPT}\n<</SYS>>\n\n"
+        f"Tech stack: {stack}\n"
+        f"PR Title: {pr_title}\n"
+        f"PR Description: {pr_body or '(none)'}\n"
+        "Generate the k6 script now: [/INST]"
+    )
+
+    payload = {
+        "model":  OLLAMA_MODEL,
+        "prompt": prompt,
+        "stream": False,
+        "options": {"temperature": 0.2},
+    }
+
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    log(f"📡 Calling Ollama /api/generate ({url}) ...")
+    try:
+        with urllib.request.urlopen(req, timeout=600) as resp:
+            raw = resp.read().decode("utf-8")
+    except Exception as e:
+        log(f"❌ Ollama /api/generate also failed: {e}")
+        raise
+
+    data = json.loads(raw)
+    content = data.get("response", "")
+    if not content:
+        raise ValueError("Ollama /api/generate returned empty response")
+
+    log(f"✅ Ollama /api/generate responded — eval_count: {data.get('eval_count', '?')}")
     return content
 
 
@@ -202,37 +247,54 @@ def save_script(script: str, path: str) -> None:
 
 def main() -> None:
     log("─" * 60)
-    log("k6 Script Generator — Groq Llama3")
+    log("k6 Script Generator — Ollama llama3 (local)")
     log("─" * 60)
 
     # ── Read environment variables ──────────────────────────────────
-    api_key = os.environ.get("GROQ_API_KEY", "").strip()
-    pr_title = os.environ.get("PR_TITLE", "").strip()
-    pr_body  = os.environ.get("PR_BODY",  "").strip()
-    stack    = os.environ.get("DETECTED_STACK", "unknown").strip()
+    ollama_host = os.environ.get("OLLAMA_HOST", "http://localhost:11434").strip()
+    pr_title    = os.environ.get("PR_TITLE",    "").strip()
+    pr_body     = os.environ.get("PR_BODY",     "").strip()
+    stack       = os.environ.get("DETECTED_STACK", "unknown").strip()
 
+    log(f"Ollama host   : {ollama_host}")
+    log(f"Model         : {OLLAMA_MODEL}")
     log(f"PR Title      : {pr_title or '(empty)'}")
     log(f"Detected Stack: {stack}")
     log(f"PR Body       : {(pr_body[:120] + '...') if len(pr_body) > 120 else pr_body or '(empty)'}")
 
-    if not api_key:
-        log("⚠️  GROQ_API_KEY is not set — writing fallback script")
+    # ── Verify Ollama is reachable ──────────────────────────────────
+    tags_url = f"{ollama_host.rstrip('/')}/api/tags"
+    try:
+        with urllib.request.urlopen(tags_url, timeout=10) as r:
+            available_models = json.loads(r.read())
+            model_names = [m.get("name", "") for m in available_models.get("models", [])]
+            log(f"✅ Ollama reachable — available models: {model_names}")
+    except Exception as e:
+        log(f"⚠️  Cannot reach Ollama at {ollama_host}: {e}")
+        log("⚠️  Writing fallback script")
         save_script(FALLBACK_SCRIPT, OUTPUT_FILE)
-        log("✅ Done (fallback)")
         return
 
-    # ── Call Groq API ───────────────────────────────────────────────
+    # ── Call Ollama — try /v1/chat/completions first, fall back to /api/generate
     generated_script = None
+    raw_content = None
+
     try:
-        raw_content = call_groq_api(api_key, pr_title, pr_body, stack)
-        log("🔍 Stripping markdown fences (if any) ...")
-        cleaned = strip_markdown_fences(raw_content)
-        log(f"Script preview (first 300 chars):\n{cleaned[:300]}\n...")
+        raw_content = call_ollama_chat(ollama_host, pr_title, pr_body, stack)
     except Exception as exc:
-        log(f"❌ Groq API call failed: {exc}")
-        log("⚠️  Falling back to default health-check script")
-        save_script(FALLBACK_SCRIPT, OUTPUT_FILE)
-        return
+        log(f"⚠️  /v1/chat/completions failed ({exc}) — retrying with /api/generate ...")
+        try:
+            raw_content = call_ollama_generate(ollama_host, pr_title, pr_body, stack)
+        except Exception as exc2:
+            log(f"❌ Both Ollama endpoints failed: {exc2}")
+            log("⚠️  Writing fallback script")
+            save_script(FALLBACK_SCRIPT, OUTPUT_FILE)
+            return
+
+    # ── Strip markdown fences ───────────────────────────────────────
+    log("🔍 Stripping markdown fences (if any) ...")
+    cleaned = strip_markdown_fences(raw_content)
+    log(f"Script preview (first 300 chars):\n{cleaned[:300]}\n...")
 
     # ── Validate ────────────────────────────────────────────────────
     if validate_k6_script(cleaned):
