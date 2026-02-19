@@ -91,8 +91,8 @@ jobs:
           ollama pull llama3
 
       # --- Execute ---
-      - name: Run K6 MCP Orchestrator
+      - name: Run K6 MCP Agent
         env:
           DETECTED_STACK: ${{ steps.detect-stack.outputs.stack }}
         run: |
-          python3 scripts/mcp_orchestrator.py
+          python3 scripts/mcp_agent.py
